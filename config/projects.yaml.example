@@ -1,0 +1,24 @@
+# OpenCode Telegram Controller - projects allowlist.
+#
+# Only projects listed here (with enabled: true) can be used as OpenCode
+# workspaces. The bot never allows arbitrary filesystem paths.
+#
+# Copy to config/projects.yaml and adjust paths.
+
+default_project: "WHO?"
+
+projects:
+  - name: "WHO?"
+    path: "~/Proyects/portrait-dataset-builder"
+    description: "Portrait dataset builder (Python + FastAPI + ML pipeline)"
+    enabled: true
+
+  - name: "WHAT?"
+    path: "~/Proyects/what"
+    description: "WHAT? - Language learning through songs (FastAPI + Whisper)"
+    enabled: true
+
+  - name: "Obsidian"
+    path: "~/Documents/obsidian"
+    description: "Personal Obsidian knowledge vault"
+    enabled: false

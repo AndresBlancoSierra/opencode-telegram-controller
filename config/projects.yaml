@@ -1,0 +1,59 @@
+# OpenCode Telegram Controller - projects allowlist.
+#
+# Only projects listed here (with enabled: true) can be used as OpenCode
+# workspaces. The bot never allows arbitrary filesystem paths.
+#
+# This file is private to this machine (contains local paths). Edit freely.
+
+default_project: "what"
+
+projects:
+  - name: "what"
+    path: "~/Proyects/what"
+    description: "WHAT? - Language learning through songs (FastAPI + Whisper)"
+    enabled: true
+
+  - name: "WHO?"
+    path: "~/Proyects/portrait-dataset-builder"
+    description: "Portrait dataset builder (Python + FastAPI + ML pipeline)"
+    enabled: true
+
+  - name: "english-capture"
+    path: "~/Proyects/english-capture"
+    description: "English capture mouse selection daemon"
+    enabled: true
+
+  - name: "gym"
+    path: "~/Proyects/gym"
+    description: "Gym project"
+    enabled: true
+
+  - name: "odysseus"
+    path: "~/Proyects/odysseus"
+    description: "Odysseus project"
+    enabled: true
+
+  - name: "security"
+    path: "~/Proyects/security"
+    description: "Security tooling"
+    enabled: true
+
+  - name: "arduino"
+    path: "~/Proyects/arduino"
+    description: "Arduino projects"
+    enabled: true
+
+  - name: "guitar-hero-controller"
+    path: "~/Proyects/guitar-hero-controller"
+    description: "Guitar Hero controller"
+    enabled: true
+
+  - name: "opencode-telegram-controller"
+    path: "~/Proyects/opencode-telegram-controller"
+    description: "This controller itself (use with care)"
+    enabled: true
+
+  - name: "Obsidian"
+    path: "~/Documents/obsidian"
+    description: "Personal Obsidian knowledge vault"
+    enabled: true

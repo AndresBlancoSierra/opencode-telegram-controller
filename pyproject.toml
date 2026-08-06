@@ -1,0 +1,53 @@
+[project]
+name = "opencode-telegram-controller"
+version = "0.1.0"
+description = "Telegram-based remote control and monitoring for OpenCode"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram>=3.13",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "aiosqlite>=0.20",
+    "PyYAML>=6.0",
+    "loguru>=0.7",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dns = [
+    "aiodns>=3.2",
+    "pycares>=4.4",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.1",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+otc = "opencode_telegram_controller.main:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/opencode_telegram_controller"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: integration tests that require a real OpenCode binary (deselect with '-m not integration')",
+]
+
+[tool.coverage.run]
+source = ["opencode_telegram_controller"]

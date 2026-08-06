@@ -1,0 +1,16 @@
+[Unit]
+Description=OpenCode Telegram Controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Proyects/opencode-telegram-controller
+EnvironmentFile=%h/.config/opencode-telegram-controller/.env
+ExecStart=%h/Proyects/opencode-telegram-controller/.venv/bin/otc
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
