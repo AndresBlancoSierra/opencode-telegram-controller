@@ -7,11 +7,18 @@ files, test results).
 
 ## Features
 
-- Natural-language task intake: any plain message becomes a task in the active project.
-- Commands: `/status`, `/tasks`, `/task <id>`, `/cancel [id]`, `/logs [id]`, `/projects`, `/use <name>`, `/help`.
-- Task queue with global concurrency limit and per-project serialization.
+- **Persistent sessions**: `/new` starts a session, plain messages continue it
+  through the *same* real OpenCode session (`opencode run --session`), `/history`
+  lists past sessions, `/continue <id>` resumes one, `/current` shows the active
+  session. Sessions survive bot restarts (stored in SQLite).
+- Natural-language message intake: any plain message is sent to the active session.
+- Commands: `/status`, `/tasks [all]`, `/task <id>`, `/cancel [id]`, `/logs [id]`,
+  `/projects`, `/use <name>`, `/new`, `/history`, `/continue <id>`, `/current`, `/help`.
+- Task queue with global concurrency limit and per-project **and per-session** serialization.
 - Timeout and graceful cancellation (process-group SIGTERM/SIGKILL).
 - Notifications: queued, started, progress, completed, failed, cancelled.
+  Interactive (in-session) messages skip "queued/started/completed" spam; the
+  final reply is delivered as the bot's answer.
 - Deterministic summaries (works offline, no LLM required); optional Ollama engine.
 - SQLite persistence; running tasks are marked FAILED on restart.
 - Long polling (no webhook, no exposed ports).
@@ -21,7 +28,7 @@ files, test results).
 
 - Arch Linux with systemd (user services). Verified: systemd 260.
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/).
-- OpenCode CLI on `PATH` (verified against 1.15.13).
+- OpenCode CLI on `PATH` (verified against 1.18.4).
 - A Telegram bot token from [@BotFather](https://t.me/BotFather) and your numeric Telegram user ID.
 
 ## Install
@@ -49,9 +56,10 @@ Message the bot from Telegram:
 ```
 /start
 /status
+/new
 Fix the failing tests in this project and create a commit.
-/use what
-/tasks
+/current
+/history
 ```
 
 ## Configuration
@@ -63,28 +71,30 @@ projects allowlist lives in `config/projects.yaml`.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest tests/
+.venv/bin/python -m pytest tests/ --ignore=tests/integration
+.venv/bin/python -m pytest tests/integration/   # real OpenCode (needs `opencode` on PATH)
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
 ```
 
-110 tests pass. The suite never contacts Telegram or launches real OpenCode
-(subprocesses are mocked).
+146 unit tests pass (they never contact Telegram and mock subprocesses); 3
+integration tests run real OpenCode and take ~1 minute.
 
 ## Layout
 
 ```
 src/opencode_telegram_controller/
-├── bot.py            # aiogram router, middlewares, handlers
+├── bot.py            # aiogram router, middlewares, handlers (/new /history /continue /current)
 ├── auth.py           # Telegram user allowlist
 ├── projects.py       # project allowlist (config/projects.yaml)
-├── queue_worker.py   # dispatch loop + concurrency
-├── task_executor.py  # per-task lifecycle (run, events, timeout, cancel, summary)
-├── task_manager.py   # high-level operations for handlers
-├── opencode/cli.py   # adapter: `opencode run --format json` / `opencode export`
+├── queue_worker.py   # dispatch loop + concurrency + per-session serialization
+├── task_executor.py  # per-task lifecycle (run, events, timeout, cancel, summary, session backfill)
+├── task_manager.py   # session lifecycle + high-level operations for handlers
+├── opencode/cli.py   # adapter: `opencode run --format json` / `opencode export` / session_exists
 ├── summaries/        # deterministic (default) and ollama generators
 ├── notifications.py  # Telegram notifications (plain text, chunked)
-├── repository.py     # SQLite task/user-state queries
+├── database.py       # schema + migrations (tasks + sessions tables)
+├── repository.py     # SQLite task/session/user-state queries
 └── main.py           # wiring + polling (entry point: `otc`)
 ```
 

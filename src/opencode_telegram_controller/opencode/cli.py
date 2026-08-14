@@ -154,6 +154,31 @@ class CLIOpenCodeAdapter(OpenCodeAdapter):
             return {}
         return data if isinstance(data, dict) else {}
 
+    async def session_exists(self, session_id: str) -> bool:
+        """Check whether a real OpenCode session exists.
+
+        Uses ``opencode export`` because it is synchronous (unlike
+        ``opencode session list``, whose JSON is written by a detached child
+        process after the parent exits, so it is not capturable via pipes).
+        A session that fails to export with "session not found" does not exist.
+        """
+        proc = await asyncio.create_subprocess_exec(
+            self._binary,
+            "export",
+            session_id,
+            env=self._base_env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            return True
+        output = (stdout + stderr).decode(errors="replace").lower()
+        if "session not found" in output:
+            return False
+        logger.warning("opencode export check failed with code {}", proc.returncode)
+        return True
+
 
 def _clean_env() -> dict[str, str]:
     env = dict(os.environ)

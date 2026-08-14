@@ -18,6 +18,7 @@ class FakeExecutor:
         self.delay = delay
         self.executed: list[int] = []
         self.fail_on: set[int] = set()
+        self.completion_waits: dict[int, asyncio.Future[str]] = {}
 
     async def execute(self, task_id: int):
         self.executed.append(task_id)
@@ -25,9 +26,19 @@ class FakeExecutor:
         if self.delay:
             await asyncio.sleep(self.delay)
         if task_id in self.fail_on:
-            await self.repo.mark_failed(task_id, "boom")
+            await self.repo.mark_finished(task_id, TaskStatus.FAILED, error="boom")
         else:
             await self.repo.mark_finished(task_id, TaskStatus.COMPLETED, exit_code=0)
+
+    def register_completion_wait(self, task_id: int) -> asyncio.Future[str]:
+        future = asyncio.get_running_loop().create_future()
+        self.completion_waits[task_id] = future
+        return future
+
+    def resolve_completion(self, task_id: int, text: str) -> None:
+        future = self.completion_waits.pop(task_id, None)
+        if future is not None and not future.done():
+            future.set_result(text)
 
 
 def make_worker(repo, registry, max_concurrent=1, executor=None, notifier=None):
@@ -90,6 +101,40 @@ async def test_same_project_serialized_even_with_capacity(repo, registry):
     await asyncio.sleep(0.05)
     assert sorted(executor.executed) == sorted([a1.id, b.id])
     assert (await repo.get_task(a2.id)).status == TaskStatus.PENDING
+
+
+async def test_same_session_serialized_even_with_capacity(repo, registry):
+    worker, executor = make_worker(repo, registry, max_concurrent=2)
+    session = await repo.create_session(user_id=1, project_id="A")
+    s1 = await repo.create_task(
+        user_id=1, project_id="A", prompt="s1", session_internal_id=session.id
+    )
+    s2 = await repo.create_task(
+        user_id=1, project_id="A", prompt="s2", session_internal_id=session.id
+    )
+    b = await repo.create_task(user_id=1, project_id="B", prompt="b")
+    dispatched = await worker.dispatch()
+    assert dispatched == 2
+    await asyncio.sleep(0.05)
+    assert sorted(executor.executed) == sorted([s1.id, b.id])
+    assert (await repo.get_task(s2.id)).status == TaskStatus.PENDING
+
+
+async def test_session_messages_executed_in_order(repo, registry):
+    worker, executor = make_worker(repo, registry, max_concurrent=1)
+    session = await repo.create_session(user_id=1, project_id="A")
+    tasks = []
+    for prompt in ("first", "second", "third"):
+        tasks.append(
+            await repo.create_task(
+                user_id=1, project_id="A", prompt=prompt, session_internal_id=session.id
+            )
+        )
+    for _task in tasks:
+        await worker.dispatch()
+        await asyncio.sleep(0.05)
+    assert executor.executed == [t.id for t in tasks]
+    assert [(await repo.get_task(t.id)).status for t in tasks] == [TaskStatus.COMPLETED] * 3
 
 
 async def test_running_tasks_not_redispatched(repo, registry):

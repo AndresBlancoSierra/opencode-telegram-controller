@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .models import Task, TaskStatus
+from .models import Session, Task, TaskStatus
 
 MAX_MESSAGE_CHARS = 4000
 
@@ -79,6 +79,65 @@ def format_task_detail(task: Task) -> str:
     return "\n".join(lines)
 
 
+def session_display_id(session: Session) -> str:
+    return session.opencode_session_id or f"#{session.id}"
+
+
+def shorten_session_id(session_id: str, limit: int = 12) -> str:
+    if len(session_id) <= limit:
+        return session_id
+    return f"{session_id[:limit]}…"
+
+
+def format_relative_time(dt, now=None) -> str:
+    from datetime import UTC, datetime
+
+    now = now or datetime.now(UTC)
+    delta = now - dt
+    seconds = max(0, int(delta.total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
+def format_sessions_list(sessions: list[Session], active_id: int | None = None) -> str:
+    if not sessions:
+        return "No sessions yet.\n\nSend /new to start one."
+    lines = ["🗂️ Your sessions:"]
+    for session in sessions:
+        marker = "• "
+        display = session_display_id(session)
+        title = f" {session.title}" if session.title else ""
+        age = format_relative_time(session.updated_at)
+        extra = "  👈 active" if active_id == session.id else ""
+        lines.append(
+            f"{marker}#{session.id}  {display}{title} — {session.project_id} — {age}{extra}"
+        )
+    lines.append("")
+    lines.append("Use /continue <id> to resume a session, or /new to start one.")
+    return "\n".join(lines)
+
+
+def format_session_detail(session: Session, task_count: int) -> str:
+    display = session_display_id(session)
+    lines = [
+        f"🧠 Session #{session.id}",
+        f"ID: {display}",
+        f"Project: {session.project_id}",
+        f"Messages: {task_count}",
+        f"Created: {session.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"Updated: {session.updated_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"Active: {'yes' if session.is_active else 'no'}",
+    ]
+    if session.title:
+        lines.append(f"Title: {session.title}")
+    return "\n".join(lines)
+
+
 def format_projects_list(projects, active: str | None) -> str:
     lines = ["📁 Available projects:"]
     for project in projects:
@@ -100,18 +159,23 @@ def help_text() -> str:
     return (
         "🤖 OpenCode Telegram Controller\n\n"
         "Control OpenCode on your PC from Telegram.\n\n"
+        "Sessions:\n"
+        "/new — start a new OpenCode session\n"
+        "/history — list your past sessions\n"
+        "/continue <id> — resume a session (id or ses_...)\n"
+        "/current — details of the active session\n\n"
         "Commands:\n"
         "/start — welcome message\n"
         "/help — this help\n"
-        "/status — active project, running tasks, queue\n"
-        "/tasks — recent tasks\n"
+        "/status — active project, session, running tasks\n"
+        "/tasks [all] — messages of the active session (or global history)\n"
         "/task <id> — task details\n"
         "/cancel [id] — cancel a running or queued task\n"
         "/logs [id] — recent logs of a task\n"
         "/projects — list available projects\n"
         "/use <name> — select the active project\n\n"
         "Natural language:\n"
-        "Send any plain text message to create a task in the active project. "
+        "Send any plain text message to continue the active session. "
         "For example:\n"
         "  Fix the failing tests in this project and create a commit."
     )

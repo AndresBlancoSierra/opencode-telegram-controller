@@ -50,10 +50,28 @@ class TaskExecutor:
         self._summarizer = summary_generator
         self._settings = settings
         self._cancel_events: dict[int, asyncio.Event] = {}
+        self._completion_futures: dict[int, asyncio.Future[str]] = {}
 
     def request_cancel(self, task_id: int) -> None:
         """Ask the running execution of ``task_id`` to stop."""
         self._cancel_events.setdefault(task_id, asyncio.Event()).set()
+
+    def register_completion_wait(self, task_id: int) -> asyncio.Future[str]:
+        """Register a future that resolves with the final reply of ``task_id``.
+
+        Used by interactive (in-session) messages: the Telegram handler awaits
+        this future so the bot answers with the task outcome instead of a
+        queued/started/completed notification spam.
+        """
+        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self._completion_futures[task_id] = future
+        return future
+
+    def resolve_completion(self, task_id: int, text: str) -> None:
+        """Resolve (or cancel with ``text``) the registered completion future."""
+        future = self._completion_futures.pop(task_id, None)
+        if future is not None and not future.done():
+            future.set_result(text)
 
     async def execute(self, task_id: int) -> None:
         task = await self._repo.get_task(task_id)
@@ -64,9 +82,11 @@ class TaskExecutor:
             await self._fail(task, "Project is no longer configured")
             return
         cancel_event = self._cancel_events.setdefault(task_id, asyncio.Event())
+        session_before = task.session_id
 
         git_before = await git_state(project.path)
-        await self._notifier.notify_task_started(task, project)
+        if not task.interactive:
+            await self._notifier.notify_task_started(task, project)
 
         try:
             handle = await self._adapter.run(
@@ -106,6 +126,10 @@ class TaskExecutor:
         session_id = state["session_id"]
         if session_id and task.session_id != session_id:
             await self._repo.set_session_id(task_id, session_id)
+        if session_id and task.session_internal_id:
+            session = await self._repo.get_session(task.session_internal_id)
+            if session and session.opencode_session_id != session_id:
+                await self._repo.touch_session(session.id, opencode_session_id=session_id)
 
         if cancel_event.is_set():
             task = await self._repo.get_task(task_id)
@@ -116,7 +140,10 @@ class TaskExecutor:
                 session_id=session_id,
                 log_tail=log_tail,
             )
-            await self._notifier.notify_task_cancelled(await self._repo.get_task(task_id))
+            if task.interactive:
+                self.resolve_completion(task_id, "🛑 Task cancelled")
+            else:
+                await self._notifier.notify_task_cancelled(await self._repo.get_task(task_id))
             return
 
         if timed_out:
@@ -137,7 +164,7 @@ class TaskExecutor:
             await self._fail(task, error, exit_code=rc, session_id=session_id, log_tail=log_tail)
             return
 
-        await self._finish_success(task, session_id, log_tail, git_before)
+        await self._finish_success(task, session_id, log_tail, git_before, session_before)
 
     # --- internals -------------------------------------------------------
 
@@ -158,7 +185,12 @@ class TaskExecutor:
                     await self._notifier.notify_progress(task, event.text)
 
     async def _finish_success(
-        self, task: Task, session_id: str | None, log_tail: str, git_before
+        self,
+        task: Task,
+        session_id: str | None,
+        log_tail: str,
+        git_before,
+        session_before: str | None,
     ) -> None:
         project = self._registry.get(task.project_id)
         export = await self._adapter.export(session_id) if session_id else {}
@@ -185,7 +217,19 @@ class TaskExecutor:
             log_tail=log_tail,
             commit_created=commit_created,
         )
-        await self._notifier.notify_task_completed(await self._repo.get_task(task.id), summary)
+        if task.interactive:
+            if session_id and session_id != session_before:
+                summary = (
+                    f"🔑 New OpenCode session: {session_id}\n\n{summary}"
+                    if summary
+                    else (f"🔑 New OpenCode session: {session_id}")
+                )
+            self.resolve_completion(
+                task.id,
+                summary or "Task finished. No additional details were captured.",
+            )
+        else:
+            await self._notifier.notify_task_completed(await self._repo.get_task(task.id), summary)
 
     async def _fail(
         self,
@@ -205,4 +249,7 @@ class TaskExecutor:
             error=error,
             log_tail=log_tail,
         )
-        await self._notifier.notify_task_failed(await self._repo.get_task(task.id))
+        if task.interactive:
+            self.resolve_completion(task.id, f"❌ Task failed\n\n{error}")
+        else:
+            await self._notifier.notify_task_failed(await self._repo.get_task(task.id))

@@ -23,6 +23,8 @@ from .auth import AuthorizationService
 from .config import Settings
 from .formatting import (
     format_projects_list,
+    format_session_detail,
+    format_sessions_list,
     format_task_detail,
     format_task_line,
     help_text,
@@ -34,7 +36,7 @@ from .projects import ProjectRegistry
 from .queue_worker import QueueWorker
 from .repository import TaskRepository
 from .task_executor import TaskExecutor
-from .task_manager import TaskError, TaskManager
+from .task_manager import SessionError, TaskError, TaskManager
 
 
 @dataclass
@@ -127,7 +129,7 @@ def build_router(ctx: AppContext) -> Router:
                 await ctx.repo.set_active_project(
                     message.from_user.id, ctx.settings.default_project
                 )
-        await message.answer(help_text())
+        await message.answer(_start_text())
 
     @router.message(Command("help"))
     async def on_help(message: Message, ctx: AppContext):
@@ -138,11 +140,16 @@ def build_router(ctx: AppContext) -> Router:
         running = await ctx.repo.count_running()
         pending = len(await ctx.repo.next_pending())
         project = await ctx.manager.active_project(message.from_user.id)
+        session = await ctx.manager.active_session(message.from_user.id)
         uptime = datetime.now(UTC) - ctx.started_at
         minutes, seconds = divmod(int(uptime.total_seconds()), 60)
+        session_line = "none"
+        if session is not None:
+            session_line = session.opencode_session_id or f"#{session.id}"
         lines = [
             "📊 Status",
             f"Active project: {project.name if project else 'none'}",
+            f"Active session: {session_line}",
             f"Running tasks: {running}",
             f"Queued tasks: {pending}",
             f"Concurrency: {ctx.settings.max_concurrent_tasks}",
@@ -178,15 +185,91 @@ def build_router(ctx: AppContext) -> Router:
 
     @router.message(Command("tasks"))
     async def on_tasks(message: Message, ctx: AppContext):
-        tasks = await ctx.repo.list_tasks(limit=10)
+        parts = message.text.split(maxsplit=1)
+        show_all = bool(parts[1:]) and parts[1].strip().lower() == "all"
+        session = None if show_all else await ctx.manager.active_session(message.from_user.id)
+        if session is not None:
+            tasks = await ctx.repo.list_tasks_by_session(session.id, limit=10)
+            header = f"🗂️ Messages of session #{session.id}:\n"
+        else:
+            tasks = await ctx.repo.list_tasks(limit=10)
+            header = "📋 Recent tasks:\n"
         if not tasks:
-            await message.answer("No tasks yet. Send a message to create one.")
+            if session is not None:
+                await message.answer(f"No messages in session #{session.id} yet. Send one!")
+            else:
+                await message.answer(
+                    "No active session and no tasks yet.\n\nUse /new to start a session."
+                )
             return
-        lines = ["📋 Recent tasks:"]
+        lines = [header]
         lines.extend(format_task_line(t) for t in tasks)
         lines.append("")
         lines.append("Use /task <id> for details.")
         await message.answer("\n".join(lines))
+
+    @router.message(Command("new"))
+    async def on_new(message: Message, ctx: AppContext):
+        parts = message.text.split(maxsplit=1)
+        title = None
+        if len(parts) > 1 and parts[1].strip():
+            title = parts[1].strip()[:80]
+        try:
+            session = await ctx.manager.new_session(message.from_user.id, title=title)
+        except SessionError as exc:
+            await message.answer(str(exc))
+            return
+        text = "🧠 New OpenCode session\n\n"
+        if session.opencode_session_id:
+            text += f"ID: {session.opencode_session_id}\n"
+        text += f"Internal ID: #{session.id}\n"
+        text += f"Project: {session.project_id}\n"
+        if session.title:
+            text += f"Title: {session.title}\n"
+        text += (
+            "\nSession is now active. Send a message to start chatting.\n"
+            "The OpenCode session ID is assigned on the first message."
+        )
+        await message.answer(text)
+
+    @router.message(Command("history"))
+    async def on_history(message: Message, ctx: AppContext):
+        sessions = await ctx.manager.list_sessions(message.from_user.id, limit=25)
+        active = await ctx.manager.active_session(message.from_user.id)
+        await message.answer(format_sessions_list(sessions, active.id if active else None))
+
+    @router.message(Command("continue"))
+    async def on_continue(message: Message, ctx: AppContext):
+        parts = message.text.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            await message.answer("Usage: /continue <session-id>\nSee /history for your sessions.")
+            return
+        ref = parts[1].strip()
+        try:
+            session = await ctx.manager.continue_session(message.from_user.id, ref)
+        except SessionError as exc:
+            await message.answer(str(exc))
+            return
+        text = "✅ OpenCode session restored\n\n"
+        if session.opencode_session_id:
+            text += f"ID: {session.opencode_session_id}\n"
+        text += f"Internal ID: #{session.id}\n"
+        text += f"Project: {session.project_id}\n"
+        if session.title:
+            text += f"Title: {session.title}\n"
+        text += "\nContinue chatting."
+        await message.answer(text)
+
+    @router.message(Command("current"))
+    async def on_current(message: Message, ctx: AppContext):
+        session = await ctx.manager.active_session(message.from_user.id)
+        if session is None:
+            await message.answer(
+                "No active session.\n\nUse /new to start one or /history to see past sessions."
+            )
+            return
+        task_count = await ctx.manager.session_task_count(session.id)
+        await message.answer(format_session_detail(session, task_count))
 
     @router.message(Command("task"))
     async def on_task(message: Message, ctx: AppContext):
@@ -247,27 +330,38 @@ def build_router(ctx: AppContext) -> Router:
     @router.message(F.text & ~F.text.startswith("/"))
     async def on_natural_language(message: Message, ctx: AppContext):
         user_id = message.from_user.id
-        project = await ctx.manager.active_project(user_id)
-        if project is None:
+        session = await ctx.manager.active_session(user_id)
+        if session is None:
             await message.answer(
-                "No active project. Use /projects to list projects and /use <name> to select one."
+                "No active OpenCode session.\n\n"
+                "Use /new to start one, /continue <id> to resume a past session, "
+                "or /use <name> to select a project first."
             )
             return
         try:
-            task = await ctx.manager.create_task(user_id, project.name, message.text)
-        except TaskError as exc:
+            reply = await ctx.manager.send_message(user_id, session, message.text)
+        except (SessionError, TaskError) as exc:
             await message.answer(str(exc))
             return
-        await message.answer(
-            f"🧠 Task #{task.id} created in project {project.name}.\n"
-            f"Prompt: {message.text}\n\nStatus: ⏳ queued"
-        )
+        for chunk in split_text(reply):
+            await message.answer(chunk)
 
     @router.message(F.text.startswith("/"))
     async def on_unknown_command(message: Message, ctx: AppContext):
         await message.answer("Unknown command. Use /help for the list of commands.")
 
     return router
+
+
+def _start_text() -> str:
+    return (
+        "👋 Welcome to OpenCode Telegram Controller.\n\n"
+        "Start a conversation with OpenCode from Telegram.\n\n"
+        "1. /use <project> to pick a workspace\n"
+        "2. /new to start an OpenCode session\n"
+        "3. Send a message — it continues the same session.\n\n"
+        "See /help for all commands."
+    )
 
 
 def _parse_task_id(message: Message) -> int | None:

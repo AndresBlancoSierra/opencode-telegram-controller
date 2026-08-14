@@ -46,12 +46,32 @@ class Task:
     summary: str | None = None
     log_tail: str | None = None
     commit_created: str | None = None
+    session_internal_id: int | None = None
+    interactive: bool = False
 
     @property
     def duration_seconds(self) -> float | None:
         if self.started_at and self.finished_at:
             return (self.finished_at - self.started_at).total_seconds()
         return None
+
+
+@dataclass
+class Session:
+    """A persistent OpenCode session owned by a user, scoped to a project.
+
+    The ``opencode_session_id`` (``ses_...``) is assigned on the first message
+    and reused by every following message of the same conversation.
+    """
+
+    id: int | None
+    user_id: int
+    project_id: str
+    created_at: datetime
+    updated_at: datetime
+    opencode_session_id: str | None = None
+    title: str | None = None
+    is_active: bool = False
 
 
 @dataclass

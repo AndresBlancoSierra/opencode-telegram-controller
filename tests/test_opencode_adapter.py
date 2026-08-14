@@ -195,3 +195,38 @@ async def test_cli_export_invalid_json_returns_empty(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     adapter = CLIOpenCodeAdapter(binary="opencode")
     assert await adapter.export("ses_1") == {}
+
+
+async def test_cli_session_exists_uses_export(monkeypatch):
+    captured = {}
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["args"] = args
+        return make_fake_subprocess(stdout_lines=['{"info":{}}'], returncode=0)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    adapter = CLIOpenCodeAdapter(binary="opencode")
+    assert await adapter.session_exists("ses_1") is True
+    assert captured["args"][1] == "export"
+
+
+async def test_cli_session_exists_false_on_not_found(monkeypatch):
+    proc = make_fake_subprocess(stderr_lines=["Error: Session not found: ses_x"], returncode=1)
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    adapter = CLIOpenCodeAdapter(binary="opencode")
+    assert await adapter.session_exists("ses_x") is False
+
+
+async def test_cli_session_exists_unknown_error_is_conservative(monkeypatch):
+    proc = make_fake_subprocess(stderr_lines=["something else"], returncode=3)
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    adapter = CLIOpenCodeAdapter(binary="opencode")
+    assert await adapter.session_exists("ses_1") is True

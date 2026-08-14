@@ -58,3 +58,11 @@ class OpenCodeAdapter(abc.ABC):
     async def export(self, session_id: str) -> dict:
         """Return the full structured JSON export of an OpenCode session."""
         raise NotImplementedError
+
+    async def session_exists(self, session_id: str) -> bool:
+        """Return whether a real OpenCode session with this id exists.
+
+        The default is conservative: assume the session still exists so that
+        the flow is never blocked by a false negative from an old CLI.
+        """
+        return True

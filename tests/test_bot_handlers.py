@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -15,19 +16,28 @@ from opencode_telegram_controller.bot import AppContext, build_router
 from opencode_telegram_controller.models import TaskStatus
 from opencode_telegram_controller.notifications import NotificationManager
 from opencode_telegram_controller.queue_worker import QueueWorker
-from opencode_telegram_controller.task_executor import TaskExecutor
 from opencode_telegram_controller.task_manager import TaskManager
 
 AUTHORIZED_ID = 123
 UNAUTHORIZED_ID = 999
 
 
-class StubExecutor(TaskExecutor):
+class StubExecutor:
+    """Duck-typed executor: interactive waits resolve immediately."""
+
     def __init__(self):
         self.cancelled: list[int] = []
 
     def request_cancel(self, task_id: int) -> None:
         self.cancelled.append(task_id)
+
+    def register_completion_wait(self, task_id: int) -> asyncio.Future[str]:
+        future = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_soon(future.set_result, "Stub reply: done")
+        return future
+
+    def resolve_completion(self, task_id: int, text: str) -> None:
+        pass
 
 
 def make_ctx(repo, registry):
@@ -103,26 +113,100 @@ async def test_authorized_user_status(repo, registry, sent, bot):
     text = sent[0]["text"]
     assert "Status" in text
     assert "Active project: A" in text
+    assert "Active session: none" in text
     assert "Running tasks: 0" in text
 
 
-async def test_natural_language_creates_task(repo, registry, sent, bot):
+async def test_new_creates_active_session(repo, registry, sent, bot):
     ctx = make_ctx(repo, registry)
     dp = await build_dp(ctx)
-    await feed(bot, dp, text="Fix the failing tests please")
-    text = sent[0]["text"]
-    assert "Task #1 created" in text
-    assert "Fix the failing tests please" in text
-    task = await repo.list_tasks(limit=1)
-    assert task and task[0].status == TaskStatus.PENDING
+    await feed(bot, dp, text="/new")
+    text = sent[-1]["text"]
+    assert "New OpenCode session" in text
+    assert "Project: A" in text
+    assert (await ctx.manager.active_session(AUTHORIZED_ID)) is not None
 
 
-async def test_natural_language_duplicate_rejected(repo, registry, sent, bot):
+async def test_new_with_title(repo, registry, sent, bot):
     ctx = make_ctx(repo, registry)
     dp = await build_dp(ctx)
-    await feed(bot, dp, text="same prompt")
-    await feed(bot, dp, text="same prompt")
-    assert "already queued" in sent[1]["text"]
+    await feed(bot, dp, text="/new my first session")
+    assert "my first session" in sent[-1]["text"]
+
+
+async def test_history_lists_sessions(repo, registry, sent, bot):
+    ctx = make_ctx(repo, registry)
+    await ctx.manager.new_session(AUTHORIZED_ID, title="one")
+    await ctx.manager.new_session(AUTHORIZED_ID, title="two")
+    dp = await build_dp(ctx)
+    await feed(bot, dp, text="/history")
+    text = sent[-1]["text"]
+    assert "#1" in text
+    assert "#2" in text
+    assert "active" in text
+
+
+async def test_continue_restores_own_session(repo, registry, sent, bot):
+    ctx = make_ctx(repo, registry)
+    dp = await build_dp(ctx)
+    await feed(bot, dp, text="/new")
+    first = await ctx.manager.active_session(AUTHORIZED_ID)
+    await feed(bot, dp, text="/new")
+    await feed(bot, dp, text=f"/continue {first.id}")
+    text = sent[-1]["text"]
+    assert "OpenCode session restored" in text
+    assert (await ctx.manager.active_session(AUTHORIZED_ID)).id == first.id
+
+
+async def test_continue_requires_argument(repo, registry, sent, bot):
+    ctx = make_ctx(repo, registry)
+    dp = await build_dp(ctx)
+    await feed(bot, dp, text="/continue")
+    assert "Usage" in sent[-1]["text"]
+
+
+async def test_use_project_clears_active_session(repo, registry, sent, bot):
+    ctx = make_ctx(repo, registry)
+    await ctx.manager.new_session(AUTHORIZED_ID)
+    dp = await build_dp(ctx)
+    await feed(bot, dp, text="/use B")
+    assert (await ctx.manager.active_session(AUTHORIZED_ID)) is None
+
+
+async def test_current_without_session(repo, registry, sent, bot):
+    ctx = make_ctx(repo, registry)
+    dp = await build_dp(ctx)
+    await feed(bot, dp, text="/current")
+    assert "No active session" in sent[-1]["text"]
+
+
+async def test_current_with_active_session(repo, registry, sent, bot):
+    ctx = make_ctx(repo, registry)
+    await ctx.manager.new_session(AUTHORIZED_ID)
+    dp = await build_dp(ctx)
+    await feed(bot, dp, text="/current")
+    text = sent[-1]["text"]
+    assert "Session #1" in text
+    assert "Messages: 0" in text
+
+
+async def test_natural_language_without_session(repo, registry, sent, bot):
+    ctx = make_ctx(repo, registry)
+    dp = await build_dp(ctx)
+    await feed(bot, dp, text="hello")
+    assert "No active OpenCode session" in sent[-1]["text"]
+
+
+async def test_natural_language_uses_active_session(repo, registry, sent, bot):
+    ctx = make_ctx(repo, registry)
+    dp = await build_dp(ctx)
+    await feed(bot, dp, text="/new")
+    await feed(bot, dp, text="analyze the project")
+    text = sent[-1]["text"]
+    assert "Stub reply: done" in text
+    tasks = await repo.list_tasks(limit=1)
+    assert tasks and tasks[0].interactive is True
+    assert tasks[0].session_internal_id == (await ctx.manager.active_session(AUTHORIZED_ID)).id
 
 
 async def test_natural_language_disabled_project_message(repo, registry, sent, bot):
@@ -151,16 +235,31 @@ async def test_tasks_empty(repo, registry, sent, bot):
     ctx = make_ctx(repo, registry)
     dp = await build_dp(ctx)
     await feed(bot, dp, text="/tasks")
-    assert "No tasks yet" in sent[-1]["text"]
+    assert "No active session and no tasks yet" in sent[-1]["text"]
 
 
-async def test_tasks_lists(repo, registry, sent, bot):
-    await repo.create_task(user_id=AUTHORIZED_ID, project_id="A", prompt="hello task")
+async def test_tasks_lists_session_messages(repo, registry, sent, bot):
     ctx = make_ctx(repo, registry)
+    session = await ctx.manager.new_session(AUTHORIZED_ID)
+    await repo.create_task(
+        user_id=AUTHORIZED_ID,
+        project_id="A",
+        prompt="hello task",
+        session_internal_id=session.id,
+    )
     dp = await build_dp(ctx)
     await feed(bot, dp, text="/tasks")
-    assert "#1" in sent[-1]["text"]
-    assert "hello task" in sent[-1]["text"]
+    text = sent[-1]["text"]
+    assert "#1" in text
+    assert "hello task" in text
+
+
+async def test_tasks_all_shows_legacy(repo, registry, sent, bot):
+    await repo.create_task(user_id=AUTHORIZED_ID, project_id="A", prompt="legacy task")
+    ctx = make_ctx(repo, registry)
+    dp = await build_dp(ctx)
+    await feed(bot, dp, text="/tasks all")
+    assert "legacy task" in sent[-1]["text"]
 
 
 async def test_task_detail(repo, registry, sent, bot):

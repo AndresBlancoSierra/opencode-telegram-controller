@@ -109,6 +109,7 @@ async def amain() -> None:
         notifier=notifier,
         executor=executor,
         settings=settings,
+        adapter=adapter,
     )
     ctx = AppContext(
         settings=settings,

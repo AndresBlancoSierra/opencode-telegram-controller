@@ -27,16 +27,49 @@ CREATE TABLE IF NOT EXISTS tasks (
     error         TEXT,
     summary       TEXT,
     log_tail      TEXT,
-    commit_created TEXT
+    commit_created TEXT,
+    session_internal_id INTEGER,
+    interactive   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id            INTEGER NOT NULL,
+    project_id         TEXT    NOT NULL,
+    opencode_session_id TEXT,
+    title              TEXT,
+    created_at         TEXT    NOT NULL,
+    updated_at         TEXT    NOT NULL,
+    is_active          INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_active ON sessions(user_id, is_active);
 
 CREATE TABLE IF NOT EXISTS user_state (
     user_id         INTEGER PRIMARY KEY,
     active_project  TEXT
 );
 """
+
+# Columns added to the tasks table by later versions. Applied to pre-existing
+# databases without touching task rows (legacy tasks stay consultable).
+_TASK_MIGRATIONS = (
+    ("session_internal_id", "INTEGER"),
+    ("interactive", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
+async def _apply_schema(conn: aiosqlite.Connection) -> None:
+    await conn.executescript(_SCHEMA)
+    for column, ddl in _TASK_MIGRATIONS:
+        cur = await conn.execute("PRAGMA table_info(tasks)")
+        existing = {row["name"] for row in await cur.fetchall()}
+        if column not in existing:
+            await conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {ddl}")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_internal_id)")
+    await conn.commit()
 
 
 class Database:
@@ -52,8 +85,7 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
-        await self._conn.executescript(_SCHEMA)
-        await self._conn.commit()
+        await _apply_schema(self._conn)
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -71,6 +103,5 @@ class Database:
         db = cls(Path(":memory:"))
         db._conn = await aiosqlite.connect(":memory:")
         db._conn.row_factory = aiosqlite.Row
-        await db._conn.executescript(_SCHEMA)
-        await db._conn.commit()
+        await _apply_schema(db._conn)
         return db

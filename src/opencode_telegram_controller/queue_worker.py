@@ -4,6 +4,7 @@ A single dispatcher loop schedules PENDING tasks. Constraints:
 
 * at most ``max_concurrent_tasks`` RUNNING tasks globally (default 1),
 * never two RUNNING tasks in the same project (workspace isolation),
+* never two RUNNING tasks in the same session (in-order conversation),
 * oldest PENDING tasks first.
 
 Tasks are marked RUNNING synchronously during dispatch, which prevents the
@@ -75,6 +76,10 @@ class QueueWorker:
                 break
             if await self._repo.is_project_busy(task.project_id):
                 continue
+            if task.session_internal_id is not None and await self._repo.is_session_busy(
+                task.session_internal_id
+            ):
+                continue
             running += 1
             await self._repo.mark_started(task.id)
             logger.info("Dispatching task #{} in project {}", task.id, task.project_id)
@@ -89,6 +94,11 @@ class QueueWorker:
             raise
         except Exception:
             logger.exception("Task #{} crashed in worker", task_id)
+            task = await self._repo.get_task(task_id)
             await self._repo.mark_finished(
                 task_id, TaskStatus.FAILED, error="Internal worker error"
             )
+            if task is not None and task.interactive:
+                self._executor.resolve_completion(
+                    task_id, "❌ Task failed\n\nInternal worker error"
+                )

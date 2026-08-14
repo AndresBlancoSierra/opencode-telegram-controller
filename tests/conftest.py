@@ -75,6 +75,7 @@ class FakeAdapter(OpenCodeAdapter):
         self.runs: list[dict] = []
         self.exports: dict[str, dict] = {}
         self.run_error: Exception | None = None
+        self.missing_sessions: set[str] = set()
 
     def queue_handle(self, handle: FakeRunHandle) -> FakeAdapter:
         self.script.append(handle)
@@ -105,6 +106,9 @@ class FakeAdapter(OpenCodeAdapter):
 
     async def export(self, session_id: str) -> dict:
         return self.exports.get(session_id, {})
+
+    async def session_exists(self, session_id: str) -> bool:
+        return session_id not in self.missing_sessions
 
 
 class FakeNotifier:

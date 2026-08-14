@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from .database import Database
-from .models import Task, TaskStatus, utcnow
+from .models import Session, Task, TaskStatus, utcnow
 
 
 def _row_to_task(row) -> Task:
@@ -29,6 +29,21 @@ def _row_to_task(row) -> Task:
         summary=row["summary"],
         log_tail=row["log_tail"],
         commit_created=row["commit_created"],
+        session_internal_id=row["session_internal_id"],
+        interactive=bool(row["interactive"]),
+    )
+
+
+def _row_to_session(row) -> Session:
+    return Session(
+        id=row["id"],
+        user_id=row["user_id"],
+        project_id=row["project_id"],
+        opencode_session_id=row["opencode_session_id"],
+        title=row["title"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+        is_active=bool(row["is_active"]),
     )
 
 
@@ -42,12 +57,31 @@ class TaskRepository:
 
     # --- tasks -----------------------------------------------------------
 
-    async def create_task(self, *, user_id: int, project_id: str, prompt: str) -> Task:
+    async def create_task(
+        self,
+        *,
+        user_id: int,
+        project_id: str,
+        prompt: str,
+        session_id: str | None = None,
+        session_internal_id: int | None = None,
+        interactive: bool = False,
+    ) -> Task:
         now = utcnow().isoformat()
         cur = await self.conn.execute(
-            "INSERT INTO tasks (user_id, project_id, prompt, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (user_id, project_id, prompt, TaskStatus.PENDING.value, now),
+            "INSERT INTO tasks (user_id, project_id, prompt, status, created_at, "
+            "session_id, session_internal_id, interactive) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                user_id,
+                project_id,
+                prompt,
+                TaskStatus.PENDING.value,
+                now,
+                session_id,
+                session_internal_id,
+                1 if interactive else 0,
+            ),
         )
         await self.conn.commit()
         return await self.get_task(cur.lastrowid)
@@ -76,12 +110,47 @@ class TaskRepository:
         rows = await cur.fetchall()
         return [_row_to_task(r) for r in rows]
 
-    async def find_duplicate(self, project_id: str, prompt: str) -> Task | None:
+    async def list_tasks_by_session(self, session_internal_id: int, limit: int = 20) -> list[Task]:
         cur = await self.conn.execute(
-            "SELECT * FROM tasks WHERE project_id = ? AND prompt = ? "
-            "AND status IN ('PENDING', 'RUNNING') ORDER BY id DESC LIMIT 1",
-            (project_id, prompt),
+            "SELECT * FROM tasks WHERE session_internal_id = ? ORDER BY id DESC LIMIT ?",
+            (session_internal_id, limit),
         )
+        rows = await cur.fetchall()
+        return [_row_to_task(r) for r in rows]
+
+    async def count_tasks_in_session(self, session_internal_id: int) -> int:
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) AS c FROM tasks WHERE session_internal_id = ?",
+            (session_internal_id,),
+        )
+        row = await cur.fetchone()
+        return row["c"]
+
+    async def is_session_busy(self, session_internal_id: int) -> bool:
+        cur = await self.conn.execute(
+            "SELECT COUNT(*) AS c FROM tasks WHERE session_internal_id = ? AND status = ?",
+            (session_internal_id, TaskStatus.RUNNING.value),
+        )
+        row = await cur.fetchone()
+        return row["c"] > 0
+
+    async def find_duplicate(
+        self, project_id: str, prompt: str, session_internal_id: int | None = None
+    ) -> Task | None:
+        if session_internal_id is not None:
+            cur = await self.conn.execute(
+                "SELECT * FROM tasks WHERE project_id = ? AND prompt = ? "
+                "AND session_internal_id = ? AND status IN ('PENDING', 'RUNNING') "
+                "ORDER BY id DESC LIMIT 1",
+                (project_id, prompt, session_internal_id),
+            )
+        else:
+            cur = await self.conn.execute(
+                "SELECT * FROM tasks WHERE project_id = ? AND prompt = ? "
+                "AND session_internal_id IS NULL "
+                "AND status IN ('PENDING', 'RUNNING') ORDER BY id DESC LIMIT 1",
+                (project_id, prompt),
+            )
         row = await cur.fetchone()
         return _row_to_task(row) if row else None
 
@@ -185,4 +254,79 @@ class TaskRepository:
             "ON CONFLICT(user_id) DO UPDATE SET active_project = excluded.active_project",
             (user_id, project_id),
         )
+        await self.conn.commit()
+
+    # --- sessions --------------------------------------------------------
+
+    async def create_session(
+        self,
+        *,
+        user_id: int,
+        project_id: str,
+        opencode_session_id: str | None = None,
+        title: str | None = None,
+    ) -> Session:
+        now = utcnow().isoformat()
+        cur = await self.conn.execute(
+            "INSERT INTO sessions (user_id, project_id, opencode_session_id, title, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, project_id, opencode_session_id, title, now, now),
+        )
+        await self.conn.commit()
+        return await self.get_session(cur.lastrowid)
+
+    async def get_session(self, session_id: int) -> Session | None:
+        cur = await self.conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        return _row_to_session(row) if row else None
+
+    async def get_session_by_opencode_id(
+        self, user_id: int, opencode_session_id: str
+    ) -> Session | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM sessions WHERE user_id = ? AND opencode_session_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id, opencode_session_id),
+        )
+        row = await cur.fetchone()
+        return _row_to_session(row) if row else None
+
+    async def list_sessions(self, user_id: int, limit: int = 25) -> list[Session]:
+        cur = await self.conn.execute(
+            "SELECT * FROM sessions WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+            (user_id, limit),
+        )
+        rows = await cur.fetchall()
+        return [_row_to_session(r) for r in rows]
+
+    async def get_active_session(self, user_id: int) -> Session | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM sessions WHERE user_id = ? AND is_active = 1 LIMIT 1",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return _row_to_session(row) if row else None
+
+    async def set_active_session(self, user_id: int, session_id: int) -> None:
+        await self.conn.execute("UPDATE sessions SET is_active = 0 WHERE user_id = ?", (user_id,))
+        await self.conn.execute("UPDATE sessions SET is_active = 1 WHERE id = ?", (session_id,))
+        await self.conn.commit()
+
+    async def clear_active_session(self, user_id: int) -> None:
+        await self.conn.execute("UPDATE sessions SET is_active = 0 WHERE user_id = ?", (user_id,))
+        await self.conn.commit()
+
+    async def touch_session(
+        self, session_id: int, *, opencode_session_id: str | None = None
+    ) -> None:
+        if opencode_session_id is not None:
+            await self.conn.execute(
+                "UPDATE sessions SET updated_at = ?, opencode_session_id = ? WHERE id = ?",
+                (utcnow().isoformat(), opencode_session_id, session_id),
+            )
+        else:
+            await self.conn.execute(
+                "UPDATE sessions SET updated_at = ? WHERE id = ?",
+                (utcnow().isoformat(), session_id),
+            )
         await self.conn.commit()
