@@ -132,6 +132,7 @@ class TaskExecutor:
                 await self._repo.touch_session(session.id, opencode_session_id=session_id)
 
         if cancel_event.is_set():
+            self._cancel_events.pop(task_id, None)
             task = await self._repo.get_task(task_id)
             await self._repo.mark_finished(
                 task_id,
@@ -164,7 +165,9 @@ class TaskExecutor:
             await self._fail(task, error, exit_code=rc, session_id=session_id, log_tail=log_tail)
             return
 
-        await self._finish_success(task, session_id, log_tail, git_before, session_before)
+        await self._finish_success(
+            task, session_id, log_tail, git_before, session_before, last_text=state["last_text"]
+        )
 
     # --- internals -------------------------------------------------------
 
@@ -191,7 +194,9 @@ class TaskExecutor:
         log_tail: str,
         git_before,
         session_before: str | None,
+        last_text: str | None = None,
     ) -> None:
+        self._cancel_events.pop(task.id, None)
         project = self._registry.get(task.project_id)
         export = await self._adapter.export(session_id) if session_id else {}
         git_after = await git_state(project.path) if project else git_before
@@ -218,16 +223,14 @@ class TaskExecutor:
             commit_created=commit_created,
         )
         if task.interactive:
+            reply = summary or "Task finished. No additional details were captured."
+            if last_text and last_text.strip():
+                reply = last_text
+            elif not summary:
+                reply = "Task finished. No additional details were captured."
             if session_id and session_id != session_before:
-                summary = (
-                    f"🔑 New OpenCode session: {session_id}\n\n{summary}"
-                    if summary
-                    else (f"🔑 New OpenCode session: {session_id}")
-                )
-            self.resolve_completion(
-                task.id,
-                summary or "Task finished. No additional details were captured.",
-            )
+                reply = f"🔑 New OpenCode session: {session_id}\n\n{reply}"
+            self.resolve_completion(task.id, reply)
         else:
             await self._notifier.notify_task_completed(await self._repo.get_task(task.id), summary)
 
@@ -240,6 +243,7 @@ class TaskExecutor:
         session_id: str | None = None,
         log_tail: str | None = None,
     ) -> None:
+        self._cancel_events.pop(task.id, None)
         logger.error("Task #{} failed: {}", task.id, error)
         await self._repo.mark_finished(
             task.id,

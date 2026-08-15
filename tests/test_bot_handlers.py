@@ -48,6 +48,10 @@ def make_ctx(repo, registry):
         repo=repo, registry=registry, notifier=notifier, executor=executor, settings=settings
     )
     auth = AuthorizationService([AUTHORIZED_ID], on_security_event=lambda text: None)
+    from opencode_telegram_controller.core.process import CommandRunner
+    from opencode_telegram_controller.services import SystemManager
+
+    system = SystemManager(settings=settings, runner=CommandRunner())
     return AppContext(
         settings=settings,
         repo=repo,
@@ -60,6 +64,7 @@ def make_ctx(repo, registry):
         ),
         notifier=notifier,
         started_at=datetime.now(UTC),
+        system=system,
     )
 
 
@@ -111,7 +116,8 @@ async def test_authorized_user_status(repo, registry, sent, bot):
     dp = await build_dp(ctx)
     await feed(bot, dp, user_id=AUTHORIZED_ID, text="/status")
     text = sent[0]["text"]
-    assert "Status" in text
+    assert "SYSTEM STATUS" in text
+    assert "CPU" in text
     assert "Active project: A" in text
     assert "Active session: none" in text
     assert "Running tasks: 0" in text

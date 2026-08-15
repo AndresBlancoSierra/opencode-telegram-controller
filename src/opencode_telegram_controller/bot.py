@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 
 from aiogram import Bot, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -18,10 +18,15 @@ from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
+from loguru import logger
 
 from .auth import AuthorizationService
 from .config import Settings
+from .core.audit import AuditLogger
+from .core.confirmation import ConfirmationManager
+from .core.permissions import PermissionRegistry
 from .formatting import (
+    dashboard_text,
     format_projects_list,
     format_session_detail,
     format_sessions_list,
@@ -35,6 +40,17 @@ from .notifications import NotificationManager
 from .projects import ProjectRegistry
 from .queue_worker import QueueWorker
 from .repository import TaskRepository
+from .services import (
+    DesktopManager,
+    DockerManager,
+    HealthMonitor,
+    LiveStreamManager,
+    MediaManager,
+    NetworkManager,
+    PowerManager,
+    SystemManager,
+    VpnManager,
+)
 from .task_executor import TaskExecutor
 from .task_manager import SessionError, TaskError, TaskManager
 
@@ -51,6 +67,25 @@ class AppContext:
     notifier: NotificationManager
     started_at: datetime
 
+    # PC Control capabilities (wired in main; optional so tests stay simple)
+    system: SystemManager | None = None
+    network: NetworkManager | None = None
+    vpn: VpnManager | None = None
+    docker: DockerManager | None = None
+    desktop: DesktopManager | None = None
+    power: PowerManager | None = None
+    media: MediaManager | None = None
+    stream: LiveStreamManager | None = None
+    monitoring: HealthMonitor | None = None
+    audit: AuditLogger | None = None
+    permissions: PermissionRegistry | None = None
+    confirmations: ConfirmationManager | None = None
+
+    @property
+    def opencode(self) -> TaskManager:
+        """OpenCode capability: the task manager that controls OpenCode."""
+        return self.manager
+
 
 class ContextMiddleware(BaseMiddleware):
     def __init__(self, ctx: AppContext):
@@ -59,6 +94,9 @@ class ContextMiddleware(BaseMiddleware):
 
     async def __call__(self, handler, event, data):
         data["ctx"] = self._ctx
+        if isinstance(event, Message):
+            kind = event.content_type or event.text
+            logger.debug("message from {} ({})", event.from_user.id, kind)
         return await handler(event, data)
 
 
@@ -119,6 +157,24 @@ def build_router(ctx: AppContext) -> Router:
     router.message.middleware(ContextMiddleware(ctx))
     router.message.middleware(AuthMiddleware(ctx.auth))
 
+    from .commands import desktop as desktop_commands
+    from .commands import docker as docker_commands
+    from .commands import media as media_commands
+    from .commands import network as network_commands
+    from .commands import power as power_commands
+    from .commands import stream as stream_commands
+    from .commands import system as system_commands
+    from .commands import vpn as vpn_commands
+
+    system_commands.register(router)
+    network_commands.register(router)
+    vpn_commands.register(router)
+    docker_commands.register(router)
+    desktop_commands.register(router)
+    power_commands.register(router)
+    media_commands.register(router)
+    stream_commands.register(router)
+
     @router.message(CommandStart())
     async def on_start(message: Message, ctx: AppContext):
         if (
@@ -129,34 +185,11 @@ def build_router(ctx: AppContext) -> Router:
                 await ctx.repo.set_active_project(
                     message.from_user.id, ctx.settings.default_project
                 )
-        await message.answer(_start_text())
+        await message.answer(dashboard_text(), parse_mode="HTML")
 
     @router.message(Command("help"))
     async def on_help(message: Message, ctx: AppContext):
-        await message.answer(help_text())
-
-    @router.message(Command("status"))
-    async def on_status(message: Message, ctx: AppContext):
-        running = await ctx.repo.count_running()
-        pending = len(await ctx.repo.next_pending())
-        project = await ctx.manager.active_project(message.from_user.id)
-        session = await ctx.manager.active_session(message.from_user.id)
-        uptime = datetime.now(UTC) - ctx.started_at
-        minutes, seconds = divmod(int(uptime.total_seconds()), 60)
-        session_line = "none"
-        if session is not None:
-            session_line = session.opencode_session_id or f"#{session.id}"
-        lines = [
-            "📊 Status",
-            f"Active project: {project.name if project else 'none'}",
-            f"Active session: {session_line}",
-            f"Running tasks: {running}",
-            f"Queued tasks: {pending}",
-            f"Concurrency: {ctx.settings.max_concurrent_tasks}",
-            f"Model: {ctx.settings.opencode_model or 'default'}",
-            f"Uptime: {minutes}m {seconds}s",
-        ]
-        await message.answer("\n".join(lines))
+        await message.answer(help_text(), parse_mode="HTML")
 
     @router.message(Command("projects"))
     async def on_projects(message: Message, ctx: AppContext):
@@ -354,14 +387,7 @@ def build_router(ctx: AppContext) -> Router:
 
 
 def _start_text() -> str:
-    return (
-        "👋 Welcome to OpenCode Telegram Controller.\n\n"
-        "Start a conversation with OpenCode from Telegram.\n\n"
-        "1. /use <project> to pick a workspace\n"
-        "2. /new to start an OpenCode session\n"
-        "3. Send a message — it continues the same session.\n\n"
-        "See /help for all commands."
-    )
+    return dashboard_text()
 
 
 def _parse_task_id(message: Message) -> int | None:

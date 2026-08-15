@@ -51,6 +51,18 @@ CREATE TABLE IF NOT EXISTS user_state (
     user_id         INTEGER PRIMARY KEY,
     active_project  TEXT
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    action  TEXT NOT NULL,
+    target  TEXT,
+    params  TEXT,
+    result  TEXT NOT NULL,
+    error   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
 """
 
 # Columns added to the tasks table by later versions. Applied to pre-existing

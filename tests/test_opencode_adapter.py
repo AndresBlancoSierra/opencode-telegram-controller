@@ -176,6 +176,9 @@ async def test_cli_export_success(monkeypatch):
 
 
 async def test_cli_export_nonzero_returns_empty(monkeypatch):
+    import opencode_telegram_controller.opencode.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_EXPORT_RETRY_DELAY", 0)
     proc = make_fake_subprocess(returncode=1)
 
     async def fake_create_subprocess_exec(*args, **kwargs):
@@ -187,6 +190,9 @@ async def test_cli_export_nonzero_returns_empty(monkeypatch):
 
 
 async def test_cli_export_invalid_json_returns_empty(monkeypatch):
+    import opencode_telegram_controller.opencode.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_EXPORT_RETRY_DELAY", 0)
     proc = make_fake_subprocess(stdout_lines=["not json"], returncode=0)
 
     async def fake_create_subprocess_exec(*args, **kwargs):
@@ -195,6 +201,27 @@ async def test_cli_export_invalid_json_returns_empty(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     adapter = CLIOpenCodeAdapter(binary="opencode")
     assert await adapter.export("ses_1") == {}
+
+
+async def test_cli_export_recovers_from_truncated_json(monkeypatch):
+    """Right after a run the export JSON can be truncated; retry recovers it."""
+    import opencode_telegram_controller.opencode.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_EXPORT_RETRY_DELAY", 0)
+    data = json.dumps({"info": {"model": {"id": "m"}}, "messages": []})
+    attempts: list[str] = []
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        attempts.append(args[1])
+        if len(attempts) == 1:
+            return make_fake_subprocess(stdout_lines=['{"info": {'], returncode=0)
+        return make_fake_subprocess(stdout_lines=[data], returncode=0)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    adapter = CLIOpenCodeAdapter(binary="opencode")
+    result = await adapter.export("ses_1")
+    assert result == {"info": {"model": {"id": "m"}}, "messages": []}
+    assert len(attempts) == 2
 
 
 async def test_cli_session_exists_uses_export(monkeypatch):

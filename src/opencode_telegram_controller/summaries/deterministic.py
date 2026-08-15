@@ -24,18 +24,27 @@ _ERRORS_RE = re.compile(r"(\d+)\s+error")
 _WARNING_RE = re.compile(r"\bwarning\b", re.IGNORECASE)
 
 
-def _collect_text(export: dict) -> str:
-    parts: list[str] = []
+def _last_assistant_text(export: dict) -> str:
+    """Return the text of the *last* assistant message only.
+
+    For continued sessions the export contains the whole conversation; the
+    task summary must reflect this task's answer, not everything the model
+    said earlier.
+    """
+    last_parts: list[str] = []
     for message in export.get("messages", []):
-        info = message.get("info", {}) if isinstance(message, dict) else {}
-        if info.get("role") != "assistant":
+        if not isinstance(message, dict):
             continue
+        if (message.get("info") or {}).get("role") != "assistant":
+            continue
+        parts: list[str] = []
         for part in message.get("parts", []):
             if isinstance(part, dict) and part.get("type") == "text":
                 text = str(part.get("text", "")).strip()
                 if text:
                     parts.append(text)
-    return "\n".join(parts)
+        last_parts = parts
+    return "\n".join(last_parts)
 
 
 def _collect_tool_names(export: dict) -> list[str]:
@@ -91,7 +100,7 @@ def _detect_tests(text: str) -> list[str]:
 
 
 def _assistant_tail(export: dict) -> str:
-    text = _collect_text(export).strip()
+    text = _last_assistant_text(export).strip()
     if not text:
         return ""
     if len(text) <= _ASSISTANT_TEXT_LIMIT:
@@ -136,7 +145,7 @@ class DeterministicSummaryGenerator(SummaryGenerator):
             lines.append("")
             lines.append(f"Commit: {commit}")
 
-        all_text = "\n".join((_collect_text(export), log_tail))
+        all_text = "\n".join((_last_assistant_text(export), log_tail))
         tests = _detect_tests(all_text)
         if tests:
             lines.append("")

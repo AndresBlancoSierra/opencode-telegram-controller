@@ -113,9 +113,9 @@ class TaskManager:
         try:
             return await asyncio.wait_for(future, timeout=wait)
         except TimeoutError:
-            self._executor.request_cancel(task.id)
             return (
-                "The task is still running and reached the wait timeout. Use /status to check it."
+                "The task is still running and reached the wait timeout. "
+                "Use /tasks or /status to check it, or /cancel to stop it."
             )
 
     # --- sessions --------------------------------------------------------

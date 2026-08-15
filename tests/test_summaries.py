@@ -75,6 +75,37 @@ async def test_summary_includes_assistant_text():
     assert "Summary:" in summary
 
 
+async def test_summary_only_uses_last_assistant_message():
+    """A continued session's export holds earlier turns; the tail must not
+    repeat the previous assistant answer."""
+    export = {
+        "info": {"model": {"providerID": "opencode", "id": "m"}},
+        "messages": [
+            {"info": {"role": "user"}, "parts": [{"type": "text", "text": "old prompt"}]},
+            {
+                "info": {"role": "assistant"},
+                "parts": [
+                    {"type": "text", "text": "OLD long previous answer that must not repeat."}
+                ],
+            },
+            {"info": {"role": "user"}, "parts": [{"type": "text", "text": "new prompt"}]},
+            {
+                "info": {"role": "assistant"},
+                "parts": [{"type": "text", "text": "New actual answer."}],
+            },
+        ],
+    }
+    summary = await GEN.generate(
+        task=make_task(),
+        export=export,
+        git_before=GitState(),
+        git_after=GitState(),
+        log_tail="",
+    )
+    assert "New actual answer." in summary
+    assert "must not repeat" not in summary
+
+
 async def test_summary_detects_tests_from_log():
     summary = await GEN.generate(
         task=make_task(),

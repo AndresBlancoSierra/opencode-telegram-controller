@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     # Telegram -----------------------------------------------------------
     telegram_bot_token: str = ""
     allowed_user_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
+    read_only_user_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
     telegram_api_base: str = "https://api.telegram.org"
     telegram_nameservers: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
@@ -77,19 +78,66 @@ class Settings(BaseSettings):
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2"
 
+    # PC Control: timeouts (seconds) -------------------------------------
+    timeout_quick_seconds: int = 10
+    timeout_docker_seconds: int = 10
+    timeout_vpn_seconds: int = 60
+
+    # PC Control: VPN -----------------------------------------------------
+    vpn_provider: str = "auto"
+    vpn_dedicated_server: str | None = None
+    vpn_countries: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    # PC Control: Docker --------------------------------------------------
+    docker_socket: str = "unix:///var/run/docker.sock"
+    docker_allowed_containers: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    docker_logs_lines: int = 200
+
+    # PC Control: Desktop -------------------------------------------------
+    screenshot_enabled: bool = True
+
+    # PC Control: Media (camera, mic, playback, stream) -------------------
+    camera_device: str = "/dev/video0"
+    camera_resolution: str = "1280x720"
+    mic_source: str = "default"
+    mic_default_seconds: int = 10
+    mic_max_seconds: int = 120
+    media_max_download_mb: int = 20
+    playback_max_seconds: int = 3600
+    stream_clip_seconds: float = 5.0
+    stream_framerate: int = 15
+    stream_with_audio: bool = True
+
+    # PC Control: Power ---------------------------------------------------
+    power_confirmation_timeout_seconds: int = 60
+    power_reboot_command: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    power_shutdown_command: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    power_sleep_command: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    # PC Control: health monitoring (0 = disabled) -------------------------
+    health_check_interval_seconds: int = 0
+
     # Logging ------------------------------------------------------------
     log_level: str = "INFO"
     log_file: Path | None = None
 
-    @field_validator("allowed_user_ids", mode="before")
+    @field_validator("allowed_user_ids", "read_only_user_ids", mode="before")
     @classmethod
     def _validate_user_ids(cls, value: object) -> list[int]:
         parts = _parse_csv_list(value)
         return [int(x) for x in parts]
 
-    @field_validator("telegram_nameservers", mode="before")
+    @field_validator(
+        "telegram_nameservers",
+        "vpn_countries",
+        "docker_allowed_containers",
+        "power_reboot_command",
+        "power_shutdown_command",
+        "power_sleep_command",
+        mode="before",
+    )
     @classmethod
-    def _validate_nameservers(cls, value: object) -> list[str]:
+    def _validate_str_list(cls, value: object) -> list[str]:
         return _parse_csv_list(value)
 
     @field_validator("opencode_extra_args", mode="before")
@@ -118,4 +166,25 @@ def load_settings() -> Settings:
             f"OTC_SUMMARY_ENGINE={settings.summary_engine!r} is not supported; "
             "use 'deterministic' or 'ollama'"
         )
+    if settings.vpn_provider not in ("auto", "nordvpn", "none"):
+        raise RuntimeError(
+            f"OTC_VPN_PROVIDER={settings.vpn_provider!r} is not supported; "
+            "use 'auto', 'nordvpn' or 'none'"
+        )
+    if settings.power_confirmation_timeout_seconds <= 0:
+        raise RuntimeError("OTC_POWER_CONFIRMATION_TIMEOUT must be >= 1")
+    if settings.health_check_interval_seconds < 0:
+        raise RuntimeError("OTC_HEALTH_CHECK_INTERVAL_SECONDS must be >= 0 (0 disables)")
+    if not settings.camera_resolution.strip():
+        raise RuntimeError("OTC_CAMERA_RESOLUTION must not be empty")
+    if settings.mic_default_seconds < 1:
+        raise RuntimeError("OTC_MIC_DEFAULT_SECONDS must be >= 1")
+    if settings.mic_max_seconds < settings.mic_default_seconds:
+        raise RuntimeError("OTC_MIC_MAX_SECONDS must be >= OTC_MIC_DEFAULT_SECONDS")
+    if settings.media_max_download_mb < 1:
+        raise RuntimeError("OTC_MEDIA_MAX_DOWNLOAD_MB must be >= 1")
+    if settings.playback_max_seconds < 1:
+        raise RuntimeError("OTC_PLAYBACK_MAX_SECONDS must be >= 1")
+    if settings.stream_clip_seconds < 1:
+        raise RuntimeError("OTC_STREAM_CLIP_SECONDS must be >= 1")
     return settings

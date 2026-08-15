@@ -157,25 +157,137 @@ def format_projects_list(projects, active: str | None) -> str:
 
 def help_text() -> str:
     return (
-        "🤖 OpenCode Telegram Controller\n\n"
-        "Control OpenCode on your PC from Telegram.\n\n"
-        "Sessions:\n"
+        "🤖 <b>OpenCode Telegram Controller</b>\n"
+        "Control OpenCode and your PC from Telegram.\n\n"
+        "🗂 OpenCode sessions:\n"
         "/new — start a new OpenCode session\n"
-        "/history — list your past sessions\n"
-        "/continue <id> — resume a session (id or ses_...)\n"
-        "/current — details of the active session\n\n"
-        "Commands:\n"
-        "/start — welcome message\n"
-        "/help — this help\n"
-        "/status — active project, session, running tasks\n"
-        "/tasks [all] — messages of the active session (or global history)\n"
-        "/task <id> — task details\n"
+        "/history — list past sessions\n"
+        "/continue &lt;id&gt; — resume a session\n"
+        "/current — details of the active session\n"
+        "/tasks [all] — messages of the active session\n"
+        "/task &lt;id&gt; — task details\n"
         "/cancel [id] — cancel a running or queued task\n"
         "/logs [id] — recent logs of a task\n"
-        "/projects — list available projects\n"
-        "/use <name> — select the active project\n\n"
+        "/projects · /use &lt;name&gt; — pick the active project\n\n"
+        "🖥 System:\n"
+        "/status — live dashboard\n"
+        "/resources — CPU, RAM, swap, load\n"
+        "/disk — filesystem usage\n"
+        "/processes — top CPU/RAM processes\n"
+        "/health — system, network, VPN, Docker\n\n"
+        "🌐 Network:\n"
+        "/ip — public &amp; local IP\n"
+        "/dns — resolver and servers\n"
+        "/network — interfaces and gateway\n\n"
+        "🔐 VPN:\n"
+        "/vpn — status or <code>/vpn &lt;country&gt;</code>\n"
+        "/vpn_status — details + public IP\n"
+        "/vpn_dedicated — dedicated server\n"
+        "/vpn_change (alias /cambiar) — reconnect the VPN\n\n"
+        "🐳 Docker:\n"
+        "/docker · /docker_status\n"
+        "/docker_restart &lt;name&gt; · /docker_logs &lt;name&gt; [lines]\n\n"
+        "🖼 Desktop:\n"
+        "/screenshot · /windows · /lock\n\n"
+        "🎥 Media:\n"
+        "/photo — capture the camera\n"
+        "/record_mic [seconds] — record the microphone\n"
+        "/stream · /stream_stop — live screen clips\n"
+        "Send an audio/video file to play it on the PC\n\n"
+        "⚡ Power (requires confirmation):\n"
+        "/reboot · /shutdown · /sleep\n"
+        "then /confirm_&lt;action&gt; or cancel with /dismiss\n\n"
         "Natural language:\n"
-        "Send any plain text message to continue the active session. "
-        "For example:\n"
-        "  Fix the failing tests in this project and create a commit."
+        "Send any plain text message to continue the active session "
+        '(e.g. "Fix the failing tests and commit").'
     )
+
+
+def dashboard_text() -> str:
+    return (
+        "🖥 <b>PC Control Bot</b>\n"
+        "Controlando el equipo y OpenCode desde Telegram.\n\n"
+        "🗂 Tareas OpenCode\n"
+        "/new — nueva sesión · /continue &lt;id&gt; — reanudar · /cancel — cancelar\n\n"
+        "🌐 Red\n"
+        "/ip — IP pública/local · /dns · /network\n"
+        "/vpn [país] · /vpn_status\n\n"
+        "🐳 Docker\n"
+        "/docker · /docker_status · /docker_restart &lt;name&gt; · /docker_logs &lt;name&gt;\n\n"
+        "🖼 Escritorio\n"
+        "/screenshot · /windows · /lock\n\n"
+        "🎥 Media\n"
+        "/photo · /record_mic [s] · /stream · /stream_stop\n"
+        "Envía audio/video para reproducirlo en el equipo\n\n"
+        "⚡ Energía (requieren confirmación)\n"
+        "/reboot · /shutdown · /sleep\n\n"
+        "/status — dashboard en vivo · /help — lista completa"
+    )
+
+
+# --- PC Control formatting ---------------------------------------------
+
+
+def format_memory(memory) -> str:
+    total_gb = memory.total_mb / 1024
+    used_gb = memory.used_mb / 1024
+    return f"{used_gb:.1f} / {total_gb:.1f} GB"
+
+
+def format_uptime(seconds: int) -> str:
+    seconds = int(seconds)
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def format_swap(swap_used_mb: int, swap_total_mb: int) -> str:
+    if not swap_total_mb:
+        return "none"
+    return f"{swap_used_mb / 1024:.1f} / {swap_total_mb / 1024:.1f} GB"
+
+
+def format_resources(resources) -> str:
+    lines = [
+        "🖥 RESOURCES",
+        f"Host: {resources.hostname}",
+        f"CPU: {resources.cpu.label}",
+        f"RAM: {format_memory(resources.memory)}",
+        f"Swap: {format_swap(resources.swap_used_mb, resources.swap_total_mb)}",
+        f"Load: {resources.load_average[0]:.2f} {resources.load_average[1]:.2f} "
+        f"{resources.load_average[2]:.2f}",
+        f"Uptime: {format_uptime(resources.uptime_seconds)}",
+    ]
+    return "\n".join(lines)
+
+
+def format_disk_list(infos) -> str:
+    lines = ["💾 FILESYSTEM"]
+    if not infos:
+        lines.append("No filesystems detected.")
+        return "\n".join(lines)
+    for info in infos:
+        lines.append(
+            f"{info.mount:<16} {info.used_gb:>8.1f} / {info.total_gb:<8.1f} GB {info.percent:>3}%"
+        )
+    return "\n".join(lines)
+
+
+def format_processes(snapshot) -> str:
+    lines = ["🧮 TOP PROCESSES"]
+
+    lines.append("\nCPU")
+    for sample in snapshot.by_cpu:
+        lines.append(f"{sample.name:<20} {sample.cpu_percent:>5.1f}%")
+
+    lines.append("\nMEM")
+    for sample in snapshot.by_memory:
+        lines.append(f"{sample.name:<20} {sample.memory_mb / 1024:>6.2f} GB")
+    return "\n".join(lines)

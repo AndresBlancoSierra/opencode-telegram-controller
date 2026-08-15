@@ -34,6 +34,12 @@ _INHERITED_OPENCODE_VARS = ("OPENCODE", "OPENCODE_PID", "OPENCODE_RUN_ID", "OPEN
 
 _CANCEL_GRACE_SECONDS = 5.0
 
+# ``opencode export`` reads the session storage file, which a detached child
+# process keeps writing for a moment after the run exits. Right after a run the
+# JSON can be transiently truncated; retry briefly instead of giving up.
+_EXPORT_RETRY_ATTEMPTS = 4
+_EXPORT_RETRY_DELAY = 0.6
+
 
 @dataclass
 class CLIHandle(RunHandle):
@@ -135,24 +141,45 @@ class CLIOpenCodeAdapter(OpenCodeAdapter):
         return handle
 
     async def export(self, session_id: str) -> dict:
-        proc = await asyncio.create_subprocess_exec(
-            self._binary,
-            "export",
-            session_id,
-            env=self._base_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        if proc.returncode != 0:
+        for attempt in range(_EXPORT_RETRY_ATTEMPTS):
+            proc = await asyncio.create_subprocess_exec(
+                self._binary,
+                "export",
+                session_id,
+                env=self._base_env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0:
+                try:
+                    data = json.loads(stdout.decode(errors="replace"))
+                except json.JSONDecodeError as exc:
+                    if attempt + 1 < _EXPORT_RETRY_ATTEMPTS:
+                        logger.warning(
+                            "opencode export truncated (attempt {}/{}): {}",
+                            attempt + 1,
+                            _EXPORT_RETRY_ATTEMPTS,
+                            exc,
+                        )
+                        await asyncio.sleep(_EXPORT_RETRY_DELAY)
+                        continue
+                    logger.exception("Failed to parse opencode export JSON")
+                    return {}
+                if isinstance(data, dict):
+                    return data
+            if attempt + 1 < _EXPORT_RETRY_ATTEMPTS:
+                logger.warning(
+                    "opencode export failed with code {} (attempt {}/{})",
+                    proc.returncode,
+                    attempt + 1,
+                    _EXPORT_RETRY_ATTEMPTS,
+                )
+                await asyncio.sleep(_EXPORT_RETRY_DELAY)
+                continue
             logger.warning("opencode export failed with code {}", proc.returncode)
             return {}
-        try:
-            data = json.loads(stdout.decode(errors="replace"))
-        except json.JSONDecodeError:
-            logger.exception("Failed to parse opencode export JSON")
-            return {}
-        return data if isinstance(data, dict) else {}
+        return {}
 
     async def session_exists(self, session_id: str) -> bool:
         """Check whether a real OpenCode session exists.

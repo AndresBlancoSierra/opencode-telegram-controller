@@ -18,6 +18,10 @@ from . import __version__
 from .auth import AuthorizationService
 from .bot import AppContext, build_bot, build_router
 from .config import Settings, load_settings
+from .core.audit import AuditLogger
+from .core.confirmation import ConfirmationManager
+from .core.permissions import PermissionRegistry
+from .core.process import CommandRunner
 from .database import Database
 from .logging_setup import setup_logging
 from .notifications import NotificationManager
@@ -25,6 +29,18 @@ from .opencode import CLIOpenCodeAdapter
 from .projects import ProjectConfigError, ProjectRegistry
 from .queue_worker import QueueWorker
 from .repository import TaskRepository
+from .services import (
+    DesktopManager,
+    DockerManager,
+    HealthMonitor,
+    LiveStreamManager,
+    MediaManager,
+    NetworkManager,
+    PowerManager,
+    SystemManager,
+    build_vpn_manager,
+)
+from .services.base import ServiceUnavailableError
 from .summaries import DeterministicSummaryGenerator, OllamaSummaryGenerator
 from .summaries.base import SummaryGenerator
 from .task_executor import TaskExecutor
@@ -78,6 +94,36 @@ async def amain() -> None:
     notifier = NotificationManager(bot, chat_ids=settings.allowed_user_ids)
     auth = AuthorizationService(settings.allowed_user_ids, on_security_event=notifier.send)
 
+    runner = CommandRunner(default_timeout=settings.timeout_quick_seconds)
+    system = SystemManager(settings=settings, runner=runner)
+    network = NetworkManager(settings=settings, runner=runner)
+    docker = DockerManager(settings=settings, runner=runner)
+    desktop = DesktopManager(settings=settings, runner=runner)
+    power = PowerManager(settings=settings, runner=runner)
+    media = MediaManager(settings=settings, runner=runner)
+    stream = LiveStreamManager(settings=settings, runner=runner, bot=bot)
+    vpn = None
+    if settings.vpn_provider != "none":
+        try:
+            vpn = build_vpn_manager(settings=settings, runner=runner)
+        except ServiceUnavailableError as exc:
+            logger.warning("VPN disabled: {}", exc)
+    audit = AuditLogger(db)
+    permissions = PermissionRegistry(
+        admin_user_ids=settings.allowed_user_ids,
+        read_only_user_ids=settings.read_only_user_ids,
+    )
+    confirmations = ConfirmationManager(timeout_seconds=settings.power_confirmation_timeout_seconds)
+    monitoring = HealthMonitor(
+        settings=settings,
+        runner=runner,
+        system=system,
+        network=network,
+        vpn=vpn,
+        docker=docker,
+        notifier=notifier,
+    )
+
     opencode_bin = resolve_opencode_bin(settings.opencode_bin)
     logger.info("Using OpenCode binary: {}", opencode_bin)
     adapter = CLIOpenCodeAdapter(
@@ -121,6 +167,18 @@ async def amain() -> None:
         worker=worker,
         notifier=notifier,
         started_at=datetime.now(UTC),
+        system=system,
+        network=network,
+        vpn=vpn,
+        docker=docker,
+        desktop=desktop,
+        power=power,
+        media=media,
+        stream=stream,
+        monitoring=monitoring,
+        audit=audit,
+        permissions=permissions,
+        confirmations=confirmations,
     )
 
     interrupted = await repo.recover_interrupted()
@@ -134,13 +192,17 @@ async def amain() -> None:
     dispatcher.include_router(router)
 
     worker.start()
+    await monitoring.start()
     logger.info("Telegram polling started (long polling, no exposed ports)")
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dispatcher.start_polling(bot)
     finally:
         logger.info("Shutting down")
+        await stream.stop_all()
+        await media.stop_all()
         await worker.stop()
+        await monitoring.stop()
         await db.close()
         await bot.session.close()
 
