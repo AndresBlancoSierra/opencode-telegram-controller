@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://github.com/AndresBlancoSierra/opencode-telegram-controller">
+    <img src="https://raw.githubusercontent.com/AndresBlancoSierra/opencode-telegram-controller/main/profile.svg" alt="OpenCode Telegram Controller — opencode-telegram-controller@arch">
+  </a>
+</p>
+
 # OpenCode Telegram Controller — PC Control Bot
 
 Control OpenCode *and your PC* from Telegram. Send a task as a plain message and
